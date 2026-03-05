@@ -1,3 +1,9 @@
+# 2.3.7.1 (2026-03-05)
+
+### Fixed
+
+* **Channel Service**: Corrigido bug na listagem de chats quando as mensagens tinham remoteJidAlt.
+
 # 2.3.7 (2025-12-05)
 
 ### Features

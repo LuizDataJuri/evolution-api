@@ -743,48 +743,61 @@ export class ChannelStartupService {
 
     const results = await this.prismaRepository.$queryRaw`
       WITH rankedMessages AS (
-        SELECT DISTINCT ON ("Message"."key"->>'remoteJid') 
-          "Contact"."id" as "contactId",
-          "Message"."key"->>'remoteJid' as "remoteJid",
-          CASE 
-            WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
-            ELSE COALESCE("Contact"."pushName", "Message"."pushName")
-          END as "pushName",
+        SELECT DISTINCT ON (jid)
+          "Contact"."id" AS "contactId",
+          jid AS "remoteJid",
+        CASE
+          WHEN jid LIKE '%@g.us'
+          THEN COALESCE("Chat"."name", "Contact"."pushName")
+          ELSE COALESCE("Contact"."pushName", "Message"."pushName")
+        END AS "pushName",
           "Contact"."profilePicUrl",
-          COALESCE(
-            to_timestamp("Message"."messageTimestamp"::double precision), 
-            "Contact"."updatedAt"
-          ) as "updatedAt",
-          "Chat"."name" as "pushName",
-          "Chat"."createdAt" as "windowStart",
-          "Chat"."createdAt" + INTERVAL '24 hours' as "windowExpires",
-          "Chat"."unreadMessages" as "unreadMessages",
-          CASE WHEN "Chat"."createdAt" + INTERVAL '24 hours' > NOW() THEN true ELSE false END as "windowActive",
-          "Message"."id" AS "lastMessageId",
-          "Message"."key" AS "lastMessage_key",
-          CASE
-            WHEN "Message"."key"->>'fromMe' = 'true' THEN 'Você'
-            ELSE "Message"."pushName"
-          END AS "lastMessagePushName",
-          "Message"."participant" AS "lastMessageParticipant",
-          "Message"."messageType" AS "lastMessageMessageType",
-          "Message"."message" AS "lastMessageMessage",
-          "Message"."contextInfo" AS "lastMessageContextInfo",
-          "Message"."source" AS "lastMessageSource",
-          "Message"."messageTimestamp" AS "lastMessageMessageTimestamp",
-          "Message"."instanceId" AS "lastMessageInstanceId",
-          "Message"."sessionId" AS "lastMessageSessionId",
-          "Message"."status" AS "lastMessageStatus"
-        FROM "Message"
-        LEFT JOIN "Contact" ON "Contact"."remoteJid" = "Message"."key"->>'remoteJid' AND "Contact"."instanceId" = "Message"."instanceId"
-        LEFT JOIN "Chat" ON "Chat"."remoteJid" = "Message"."key"->>'remoteJid' AND "Chat"."instanceId" = "Message"."instanceId"
-        WHERE "Message"."instanceId" = ${this.instanceId}
-        ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
-        ${timestampFilter}
-        ORDER BY "Message"."key"->>'remoteJid', "Message"."messageTimestamp" DESC
+        COALESCE(
+          TO_TIMESTAMP("Message"."messageTimestamp"::double precision),
+          "Contact"."updatedAt"
+        ) AS "updatedAt",
+        "Chat"."createdAt" AS "windowStart",
+        "Chat"."createdAt" + INTERVAL '24 hours' AS "windowExpires",
+        "Chat"."unreadMessages" AS "unreadMessages",
+        CASE
+          WHEN "Chat"."createdAt" + INTERVAL '24 hours' > NOW()
+          THEN true
+          ELSE false
+        END AS "windowActive",
+        "Message"."id" AS "lastMessageId",
+        "Message"."key" AS "lastMessage_key",
+        CASE
+          WHEN "Message"."key"->>'fromMe' = 'true'
+          THEN 'Você'
+          ELSE "Message"."pushName"
+        END AS "lastMessagePushName",
+        "Message"."participant" AS "lastMessageParticipant",
+        "Message"."messageType" AS "lastMessageMessageType",
+        "Message"."message" AS "lastMessageMessage",
+        "Message"."contextInfo" AS "lastMessageContextInfo",
+        "Message"."source" AS "lastMessageSource",
+        "Message"."messageTimestamp" AS "lastMessageMessageTimestamp",
+        "Message"."instanceId" AS "lastMessageInstanceId",
+        "Message"."sessionId" AS "lastMessageSessionId",
+        "Message"."status" AS "lastMessageStatus"
+        FROM (
+          SELECT *,
+            CASE
+              WHEN "Message"."key"->>'remoteJidAlt' IS NOT NULL
+              AND "Message"."key"->>'remoteJidAlt' NOT LIKE '%@lid'
+              THEN "Message"."key"->>'remoteJidAlt'
+              ELSE "Message"."key"->>'remoteJid'
+            END AS jid
+          FROM "Message"
+          WHERE "Message"."instanceId" = ${this.instanceId}
+          ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
+          ${timestampFilter}
+        ) AS "Message"
+        LEFT JOIN "Contact" ON "Contact"."remoteJid" = jid AND "Contact"."instanceId" = "Message"."instanceId"
+        LEFT JOIN "Chat" ON "Chat"."remoteJid" = jid AND "Chat"."instanceId" = "Message"."instanceId"
+        ORDER BY jid, "Message"."messageTimestamp" DESC
       )
-      SELECT * FROM rankedMessages 
-      ORDER BY "updatedAt" DESC NULLS LAST
+      SELECT * FROM rankedMessages ORDER BY "updatedAt" DESC NULLS LAST
       ${limit}
       ${offset};
     `;
