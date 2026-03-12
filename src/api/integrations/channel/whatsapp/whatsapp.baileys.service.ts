@@ -5460,6 +5460,23 @@ export class BaileysStartupService extends ChannelStartupService {
   public async fetchMessages(query: Query<Message>) {
     const keyFilters = query?.where?.key as ExtendedIMessageKey;
 
+    let jids: string[] | null = null;
+    try {
+      const isOnWhatsapp = await this.prismaRepository.isOnWhatsapp.findFirst({
+        where: {
+          jidOptions: {
+            contains: keyFilters.remoteJid,
+          },
+        },
+      });
+
+      if (isOnWhatsapp?.jidOptions) {
+        jids = isOnWhatsapp.jidOptions.split(',');
+      }
+    } catch (error) {
+      this.logger.error(error);
+    }
+
     const timestampFilter = {};
     if (query?.where?.messageTimestamp) {
       if (query.where.messageTimestamp['gte'] && query.where.messageTimestamp['lte']) {
@@ -5470,25 +5487,30 @@ export class BaileysStartupService extends ChannelStartupService {
       }
     }
 
+    const queryWhere = {
+      instanceId: this.instanceId,
+      id: query?.where?.id,
+      source: query?.where?.source,
+      messageType: query?.where?.messageType,
+      ...timestampFilter,
+      AND: [
+        keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
+        keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
+        keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
+        {
+          OR:
+            jids?.length > 0
+              ? jids.map((jid) => ({ key: { path: ['remoteJid'], equals: jid } }))
+              : [
+                  keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+                  keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
+                ],
+        },
+      ],
+    };
+
     const count = await this.prismaRepository.message.count({
-      where: {
-        instanceId: this.instanceId,
-        id: query?.where?.id,
-        source: query?.where?.source,
-        messageType: query?.where?.messageType,
-        ...timestampFilter,
-        AND: [
-          keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
-          keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
-          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
-          {
-            OR: [
-              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
-            ],
-          },
-        ],
-      },
+      where: queryWhere,
     });
 
     if (!query?.offset) {
@@ -5500,24 +5522,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     const messages = await this.prismaRepository.message.findMany({
-      where: {
-        instanceId: this.instanceId,
-        id: query?.where?.id,
-        source: query?.where?.source,
-        messageType: query?.where?.messageType,
-        ...timestampFilter,
-        AND: [
-          keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
-          keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
-          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
-          {
-            OR: [
-              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
-            ],
-          },
-        ],
-      },
+      where: queryWhere,
       orderBy: { messageTimestamp: 'desc' },
       skip: query.offset * (query?.page === 1 ? 0 : (query?.page as number) - 1),
       take: query.offset,

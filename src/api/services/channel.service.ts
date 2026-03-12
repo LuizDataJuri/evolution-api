@@ -800,12 +800,17 @@ export class ChannelStartupService {
         WITH messages AS (
           SELECT
             "Message".*,
-            CASE
-              WHEN "Message"."key"->>'remoteJidAlt' IS NOT NULL AND "Message"."key"->>'remoteJidAlt' NOT LIKE '%@lid'
-                THEN "Message"."key"->>'remoteJidAlt'
-              ELSE "Message"."key"->>'remoteJid'
-            END AS "chatJid"
+            COALESCE(
+              NULLIF("IsOnWhatsapp"."remoteJid", ''),
+              CASE
+                WHEN "Message"."key"->>'remoteJidAlt' IS NOT NULL AND "Message"."key"->>'remoteJidAlt' NOT LIKE '%@lid'
+                  THEN "Message"."key"->>'remoteJidAlt'
+                ELSE "Message"."key"->>'remoteJid'
+              END
+            ) AS "chatJid"
           FROM "Message"
+          LEFT JOIN "IsOnWhatsapp" ON "IsOnWhatsapp"."jidOptions" LIKE concat('%', "Message"."key"->>'remoteJid', '%')
+          WHERE "Message"."instanceId" = ${this.instanceId}
         ),
         rankedMessages AS (
           SELECT DISTINCT ON ("chatJid")
