@@ -921,12 +921,27 @@ export class BaileysStartupService extends ChannelStartupService {
         }
 
         const updatedContacts = await Promise.all(
-          contacts.map(async (contact) => ({
-            remoteJid: contact.id,
-            pushName: contact?.name || contact?.verifiedName || contact.id.split('@')[0],
-            profilePicUrl: (await this.profilePicture(contact.id)).profilePictureUrl,
-            instanceId: this.instanceId,
-          })),
+          contacts.map(async (contact) => {
+            let isOnWhatsappId: string | undefined = undefined;
+            try {
+              const isOnWhatsapp = await this.prismaRepository.isOnWhatsapp.findFirst({
+                where: { jidOptions: { contains: contact.id } },
+              });
+              if (isOnWhatsapp) {
+                isOnWhatsappId = isOnWhatsapp.id;
+              }
+            } catch (error) {
+              this.logger.error(['Error to find isOnWhatsapp', error?.message, error?.stack]);
+            }
+
+            return {
+              remoteJid: contact.id,
+              pushName: contact?.name || contact?.verifiedName || contact.id.split('@')[0],
+              profilePicUrl: (await this.profilePicture(contact.id)).profilePictureUrl,
+              instanceId: this.instanceId,
+              isOnWhatsappId: isOnWhatsappId,
+            };
+          }),
         );
 
         if (updatedContacts.length > 0) {
@@ -972,15 +987,35 @@ export class BaileysStartupService extends ChannelStartupService {
     },
 
     'contacts.update': async (contacts: Partial<Contact>[]) => {
-      const contactsRaw: { remoteJid: string; pushName?: string; profilePicUrl?: string; instanceId: string }[] = [];
+      const contactsRaw: {
+        remoteJid: string;
+        pushName?: string;
+        profilePicUrl?: string;
+        instanceId: string;
+        isOnWhatsappId?: string;
+      }[] = [];
       for await (const contact of contacts) {
         this.logger.debug(`Updating contact: ${JSON.stringify(contact, null, 2)}`);
-        contactsRaw.push({
+        const contactRaw = {
           remoteJid: contact.id,
           pushName: contact?.name ?? contact?.verifiedName,
           profilePicUrl: (await this.profilePicture(contact.id)).profilePictureUrl,
           instanceId: this.instanceId,
-        });
+          isOnWhatsappId: undefined,
+        };
+
+        try {
+          const isOnWhatsapp = await this.prismaRepository.isOnWhatsapp.findFirst({
+            where: { jidOptions: { contains: contact.id } },
+          });
+          if (isOnWhatsapp) {
+            contactRaw.isOnWhatsappId = isOnWhatsapp.id;
+          }
+        } catch (error) {
+          this.logger.error(['Error to find isOnWhatsapp', error?.message, error?.stack]);
+        }
+
+        contactsRaw.push(contactRaw);
       }
 
       this.sendDataWebhook(Events.CONTACTS_UPDATE, contactsRaw);
