@@ -748,6 +748,20 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  private async getIsOnWhatsappIdByRemoteJid(remoteJid: string): Promise<string | undefined> {
+    try {
+      const isOnWhatsapp = await this.prismaRepository.isOnWhatsapp.findFirst({
+        where: remoteJid == '0@s.whatsapp.net' ? { remoteJid: remoteJid } : { jidOptions: { contains: remoteJid } },
+      });
+
+      return isOnWhatsapp?.id;
+    } catch (error) {
+      this.logger.error(['Error to find isOnWhatsapp', error?.message, error?.stack]);
+    }
+
+    return undefined;
+  }
+
   private readonly chatHandle = {
     'chats.upsert': async (chats: Chat[]) => {
       const existingChatIds = await this.prismaRepository.chat.findMany({
@@ -757,14 +771,17 @@ export class BaileysStartupService extends ChannelStartupService {
 
       const existingChatIdSet = new Set(existingChatIds.map((chat) => chat.remoteJid));
 
-      const chatsToInsert = chats
-        .filter((chat) => !existingChatIdSet?.has(chat.id))
-        .map((chat) => ({
-          remoteJid: chat.id,
-          instanceId: this.instanceId,
-          name: chat.name,
-          unreadMessages: chat.unreadCount !== undefined ? chat.unreadCount : 0,
-        }));
+      const chatsToInsert = await Promise.all(
+        chats
+          .filter((chat) => !existingChatIdSet?.has(chat.id))
+          .map(async (chat) => ({
+            remoteJid: chat.id,
+            instanceId: this.instanceId,
+            name: chat.name,
+            unreadMessages: chat.unreadCount !== undefined ? chat.unreadCount : 0,
+            isOnWhatsappId: (await this.getIsOnWhatsappIdByRemoteJid(chat.id)) || undefined,
+          })),
+      );
 
       this.sendDataWebhook(Events.CHATS_UPSERT, chatsToInsert);
 
@@ -788,9 +805,13 @@ export class BaileysStartupService extends ChannelStartupService {
       this.sendDataWebhook(Events.CHATS_UPDATE, chatsRaw);
 
       for (const chat of chats) {
+        const data = {
+          remoteJid: chat.id,
+          isOnWhatsappId: (await this.getIsOnWhatsappIdByRemoteJid(chat.id)) || undefined,
+        };
         await this.prismaRepository.chat.updateMany({
           where: { instanceId: this.instanceId, remoteJid: chat.id, name: chat.name },
-          data: { remoteJid: chat.id },
+          data: data,
         });
       }
     },
@@ -808,12 +829,17 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly contactHandle = {
     'contacts.upsert': async (contacts: Contact[]) => {
       try {
-        const contactsRaw: any = contacts.map((contact) => ({
-          remoteJid: contact.id,
-          pushName: contact?.name || contact?.verifiedName || contact.id.split('@')[0],
-          profilePicUrl: null,
-          instanceId: this.instanceId,
-        }));
+        const contactsRaw: any = await Promise.all(
+          contacts.map(async (contact) => {
+            return {
+              remoteJid: contact.id,
+              pushName: contact?.name || contact?.verifiedName || contact.id.split('@')[0],
+              profilePicUrl: null,
+              instanceId: this.instanceId,
+              isOnWhatsappId: await this.getIsOnWhatsappIdByRemoteJid(contact.id),
+            };
+          }),
+        );
 
         if (contactsRaw.length > 0) {
           this.sendDataWebhook(Events.CONTACTS_UPSERT, contactsRaw);
@@ -862,9 +888,13 @@ export class BaileysStartupService extends ChannelStartupService {
           await Promise.all(
             updatedContacts.map(async (contact) => {
               if (this.configService.get<Database>('DATABASE').SAVE_DATA.CONTACTS) {
+                const data = {
+                  profilePicUrl: contact.profilePicUrl,
+                  isOnWhatsappId: (await this.getIsOnWhatsappIdByRemoteJid(contact.remoteJid)) || undefined,
+                };
                 await this.prismaRepository.contact.updateMany({
                   where: { remoteJid: contact.remoteJid, instanceId: this.instanceId },
-                  data: { profilePicUrl: contact.profilePicUrl },
+                  data: data,
                 });
               }
 
@@ -895,7 +925,13 @@ export class BaileysStartupService extends ChannelStartupService {
     },
 
     'contacts.update': async (contacts: Partial<Contact>[]) => {
-      const contactsRaw: { remoteJid: string; pushName?: string; profilePicUrl?: string; instanceId: string }[] = [];
+      const contactsRaw: {
+        remoteJid: string;
+        pushName?: string;
+        profilePicUrl?: string;
+        instanceId: string;
+        isOnWhatsappId?: string;
+      }[] = [];
       for await (const contact of contacts) {
         this.logger.debug(`Updating contact: ${JSON.stringify(contact, null, 2)}`);
         contactsRaw.push({
@@ -903,6 +939,7 @@ export class BaileysStartupService extends ChannelStartupService {
           pushName: contact?.name ?? contact?.verifiedName,
           profilePicUrl: (await this.profilePicture(contact.id)).profilePictureUrl,
           instanceId: this.instanceId,
+          isOnWhatsappId: (await this.getIsOnWhatsappIdByRemoteJid(contact.id)) || undefined,
         });
       }
 
@@ -974,7 +1011,7 @@ export class BaileysStartupService extends ChannelStartupService {
           }
         }
 
-        const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
+        const chatsRaw: { remoteJid: string; instanceId: string; name?: string; isOnWhatsappId?: string }[] = [];
         const chatsRepository = new Set(
           (await this.prismaRepository.chat.findMany({ where: { instanceId: this.instanceId } })).map(
             (chat) => chat.remoteJid,
@@ -992,6 +1029,9 @@ export class BaileysStartupService extends ChannelStartupService {
         this.sendDataWebhook(Events.CHATS_SET, chatsRaw);
 
         if (this.configService.get<Database>('DATABASE').SAVE_DATA.HISTORIC) {
+          for (const chat of chatsRaw) {
+            chat.isOnWhatsappId = (await this.getIsOnWhatsappIdByRemoteJid(chat.remoteJid)) || undefined;
+          }
           await this.prismaRepository.chat.createMany({ data: chatsRaw, skipDuplicates: true });
         }
 
@@ -1191,9 +1231,13 @@ export class BaileysStartupService extends ChannelStartupService {
             this.sendDataWebhook(Events.CHATS_UPSERT, [{ ...existingChat, name: received.pushName }]);
             if (this.configService.get<Database>('DATABASE').SAVE_DATA.CHATS) {
               try {
+                const data = {
+                  name: received.pushName,
+                  isOnWhatsappId: (await this.getIsOnWhatsappIdByRemoteJid(received.key.remoteJid)) || undefined,
+                };
                 await this.prismaRepository.chat.update({
                   where: { id: existingChat.id },
-                  data: { name: received.pushName },
+                  data: data,
                 });
               } catch {
                 console.log(`Chat insert record ignored: ${received.key.remoteJid} - ${this.instanceId}`);
@@ -1712,11 +1756,18 @@ export class BaileysStartupService extends ChannelStartupService {
           });
 
           if (existingChat) {
-            const chatToInsert = { remoteJid: message.remoteJid, instanceId: this.instanceId, unreadMessages: 0 };
+            const chatToInsert = {
+              remoteJid: message.remoteJid,
+              instanceId: this.instanceId,
+              unreadMessages: 0,
+              isOnWhatsappId: undefined,
+            };
 
             this.sendDataWebhook(Events.CHATS_UPSERT, [chatToInsert]);
             if (this.configService.get<Database>('DATABASE').SAVE_DATA.CHATS) {
               try {
+                chatToInsert.isOnWhatsappId =
+                  (await this.getIsOnWhatsappIdByRemoteJid(chatToInsert.remoteJid)) || undefined;
                 await this.prismaRepository.chat.update({ where: { id: existingChat.id }, data: chatToInsert });
               } catch {
                 console.log(`Chat insert record ignored: ${chatToInsert.remoteJid} - ${chatToInsert.instanceId}`);
@@ -5016,6 +5067,23 @@ export class BaileysStartupService extends ChannelStartupService {
   public async fetchMessages(query: Query<Message>) {
     const keyFilters = query?.where?.key as ExtendedIMessageKey;
 
+    let jids: string[] | null = null;
+    try {
+      const isOnWhatsapp = await this.prismaRepository.isOnWhatsapp.findFirst({
+        where: {
+          jidOptions: {
+            contains: keyFilters.remoteJid,
+          },
+        },
+      });
+
+      if (isOnWhatsapp?.jidOptions) {
+        jids = isOnWhatsapp.jidOptions.split(',');
+      }
+    } catch (error) {
+      this.logger.error(error);
+    }
+
     const timestampFilter = {};
     if (query?.where?.messageTimestamp) {
       if (query.where.messageTimestamp['gte'] && query.where.messageTimestamp['lte']) {
@@ -5026,25 +5094,30 @@ export class BaileysStartupService extends ChannelStartupService {
       }
     }
 
+    const queryWhere = {
+      instanceId: this.instanceId,
+      id: query?.where?.id,
+      source: query?.where?.source,
+      messageType: query?.where?.messageType,
+      ...timestampFilter,
+      AND: [
+        keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
+        keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
+        keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
+        {
+          OR:
+            jids?.length > 0
+              ? jids.map((jid) => ({ key: { path: ['remoteJid'], equals: jid } }))
+              : [
+                  keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+                  keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
+                ],
+        },
+      ],
+    };
+
     const count = await this.prismaRepository.message.count({
-      where: {
-        instanceId: this.instanceId,
-        id: query?.where?.id,
-        source: query?.where?.source,
-        messageType: query?.where?.messageType,
-        ...timestampFilter,
-        AND: [
-          keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
-          keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
-          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
-          {
-            OR: [
-              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
-            ],
-          },
-        ],
-      },
+      where: queryWhere,
     });
 
     if (!query?.offset) {
@@ -5056,24 +5129,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     const messages = await this.prismaRepository.message.findMany({
-      where: {
-        instanceId: this.instanceId,
-        id: query?.where?.id,
-        source: query?.where?.source,
-        messageType: query?.where?.messageType,
-        ...timestampFilter,
-        AND: [
-          keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
-          keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
-          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
-          {
-            OR: [
-              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
-            ],
-          },
-        ],
-      },
+      where: queryWhere,
       orderBy: { messageTimestamp: 'desc' },
       skip: query.offset * (query?.page === 1 ? 0 : (query?.page as number) - 1),
       take: query.offset,

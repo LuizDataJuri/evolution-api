@@ -734,70 +734,95 @@ export class ChannelStartupService {
     const timestampFilter =
       query?.where?.messageTimestamp?.gte && query?.where?.messageTimestamp?.lte
         ? Prisma.sql`
-        AND "Message"."messageTimestamp" >= ${Math.floor(new Date(query.where.messageTimestamp.gte).getTime() / 1000)}
-        AND "Message"."messageTimestamp" <= ${Math.floor(new Date(query.where.messageTimestamp.lte).getTime() / 1000)}`
+          AND messages."messageTimestamp" >= ${Math.floor(new Date(query.where.messageTimestamp.gte).getTime() / 1000)}
+          AND messages."messageTimestamp" <= ${Math.floor(new Date(query.where.messageTimestamp.lte).getTime() / 1000)}`
         : Prisma.sql``;
 
     const limit = query?.take ? Prisma.sql`LIMIT ${query.take}` : Prisma.sql``;
     const offset = query?.skip ? Prisma.sql`OFFSET ${query.skip}` : Prisma.sql``;
 
     const results = await this.prismaRepository.$queryRaw`
-      WITH rankedMessages AS (
-        SELECT DISTINCT ON (jid)
-          "Contact"."id" AS "contactId",
-          jid AS "remoteJid",
+      WITH messages AS (SELECT "Message".*,
+                               COALESCE("IsOnWhatsapp"."remoteJid", CASE
+                                                                      WHEN key.remoteJidAlt IS NOT NULL AND key.remoteJidAlt NOT LIKE '%@lid'
+                                                                        THEN key.remoteJidAlt
+                                                                      WHEN key.remoteJid IS NOT NULL AND key.remoteJid NOT LIKE '%@lid'
+                                                                        THEN key.remoteJid
+                                                                      ELSE COALESCE(key.remoteJidAlt, key.remoteJid) END) AS "chatJid"
+                        FROM "Message"
+                               CROSS JOIN LATERAL (SELECT "Message"."key" ->> 'remoteJid' AS remoteJid, "Message"."key" ->> 'remoteJidAlt' AS remoteJidAlt) key
+        LEFT JOIN "Contact"
+      ON "Contact"."remoteJid" = key.remoteJid OR
+        "Contact"."remoteJid" = key.remoteJidAlt
+        LEFT JOIN "Chat"
+        ON "Chat"."remoteJid" = key.remoteJid OR "Chat"."remoteJid" = key.remoteJidAlt
+        LEFT JOIN "IsOnWhatsapp" ON "IsOnWhatsapp"."id" = "Contact"."isOnWhatsappId" OR
+        "IsOnWhatsapp"."id" = "Chat"."isOnWhatsappId"
+      WHERE "Message"."instanceId" = ${this.instanceId}
+        AND key.remoteJid != '0@s.whatsapp.net')
+          , rankedMessages AS (
+      SELECT DISTINCT
+      ON ("chatJid") "Contact"."id" AS "contactId",
+        messages."chatJid" AS "remoteJid",
         CASE
-          WHEN jid LIKE '%@g.us'
-          THEN COALESCE("Chat"."name", "Contact"."pushName")
-          ELSE COALESCE("Contact"."pushName", "Message"."pushName")
-        END AS "pushName",
-          "Contact"."profilePicUrl",
-        COALESCE(
-          TO_TIMESTAMP("Message"."messageTimestamp"::double precision),
-          "Contact"."updatedAt"
-        ) AS "updatedAt",
+        WHEN messages."chatJid" LIKE '%@g.us' THEN COALESCE (
+        NULLIF ("Chat"."name", ''),
+        NULLIF ("Contact"."pushName", ''))
+        ELSE COALESCE (NULLIF ("Contact"."pushName", ''),
+        NULLIF ("Chat"."name", ''), CASE
+        WHEN messages."key" ->> 'fromMe' = 'false'
+        THEN messages."pushName"
+        ELSE NULL END,
+        NULLIF (SPLIT_PART(messages."chatJid", '@', 1), '')) END AS "pushName",
+        "Contact"."profilePicUrl",
+        COALESCE (
+        TO_TIMESTAMP(messages."messageTimestamp":: DOUBLE PRECISION),
+        "Contact"."updatedAt") AS "updatedAt",
         "Chat"."createdAt" AS "windowStart",
         "Chat"."createdAt" + INTERVAL '24 hours' AS "windowExpires",
         "Chat"."unreadMessages" AS "unreadMessages",
         CASE
-          WHEN "Chat"."createdAt" + INTERVAL '24 hours' > NOW()
-          THEN true
-          ELSE false
-        END AS "windowActive",
-        "Message"."id" AS "lastMessageId",
-        "Message"."key" AS "lastMessage_key",
+        WHEN "Chat"."createdAt" + INTERVAL '24 hours' > NOW()
+        THEN TRUE
+        ELSE FALSE END AS "windowActive",
+        messages."id" AS "lastMessageId",
+        messages."key" AS "lastMessageKey",
         CASE
-          WHEN "Message"."key"->>'fromMe' = 'true'
-          THEN 'Você'
-          ELSE "Message"."pushName"
-        END AS "lastMessagePushName",
-        "Message"."participant" AS "lastMessageParticipant",
-        "Message"."messageType" AS "lastMessageMessageType",
-        "Message"."message" AS "lastMessageMessage",
-        "Message"."contextInfo" AS "lastMessageContextInfo",
-        "Message"."source" AS "lastMessageSource",
-        "Message"."messageTimestamp" AS "lastMessageMessageTimestamp",
-        "Message"."instanceId" AS "lastMessageInstanceId",
-        "Message"."sessionId" AS "lastMessageSessionId",
-        "Message"."status" AS "lastMessageStatus"
-        FROM (
-          SELECT *,
-            CASE
-              WHEN "Message"."key"->>'remoteJidAlt' IS NOT NULL
-              AND "Message"."key"->>'remoteJidAlt' NOT LIKE '%@lid'
-              THEN "Message"."key"->>'remoteJidAlt'
-              ELSE "Message"."key"->>'remoteJid'
-            END AS jid
-          FROM "Message"
-          WHERE "Message"."instanceId" = ${this.instanceId}
-          ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
-          ${timestampFilter}
-        ) AS "Message"
-        LEFT JOIN "Contact" ON "Contact"."remoteJid" = jid AND "Contact"."instanceId" = "Message"."instanceId"
-        LEFT JOIN "Chat" ON "Chat"."remoteJid" = jid AND "Chat"."instanceId" = "Message"."instanceId"
-        ORDER BY jid, "Message"."messageTimestamp" DESC
-      )
-      SELECT * FROM rankedMessages ORDER BY "updatedAt" DESC NULLS LAST
+        WHEN messages."key" ->> 'fromMe' = 'true' THEN 'Você'
+        ELSE messages."pushName" END AS "lastMessagePushName",
+        messages."participant" AS "lastMessageParticipant",
+        messages."messageType" AS "lastMessageMessageType",
+        messages."message" AS "lastMessageMessage",
+        messages."contextInfo" AS "lastMessageContextInfo",
+        messages."source" AS "lastMessageSource",
+        messages."messageTimestamp" AS "lastMessageMessageTimestamp",
+        messages."instanceId" AS "lastMessageInstanceId",
+        messages."sessionId" AS "lastMessageSessionId",
+        messages."status" AS "lastMessageStatus"
+      FROM messages
+        LEFT JOIN LATERAL (
+        SELECT *
+        FROM "Contact"
+        WHERE "Contact"."instanceId" = messages."instanceId" AND ("Contact"."remoteJid" = messages."key" ->> 'remoteJid' OR "Contact"."remoteJid" = messages."key" ->> 'remoteJidAlt')
+        ORDER BY ("Contact"."pushName" IS NOT NULL AND "Contact"."pushName" != '') DESC, ("Contact"."profilePicUrl" IS NOT NULL AND "Contact"."profilePicUrl" != '') DESC
+        LIMIT 1
+        ) "Contact"
+      ON TRUE
+        LEFT JOIN LATERAL (
+        SELECT *
+        FROM "Chat"
+        WHERE "Chat"."instanceId" = messages."instanceId" AND ("Chat"."remoteJid" = messages."key" ->> 'remoteJid' OR "Chat"."remoteJid" = messages."key" ->> 'remoteJidAlt')
+        ORDER BY ("Chat"."name" IS NOT NULL AND "Chat"."name" != '') DESC
+        LIMIT 1
+        ) "Chat" ON TRUE
+      WHERE messages."instanceId" = ${this.instanceId} ${remoteJid ? Prisma.sql`AND (messages."key"->>'remoteJid' = ${remoteJid} OR messages."key"->>'remoteJidAlt' = ${remoteJid})` : Prisma.sql``} ${timestampFilter}
+      ORDER BY
+        "chatJid",
+        "messageTimestamp" DESC NULLS LAST
+        )
+      SELECT *
+      FROM rankedMessages
+      ORDER BY "updatedAt" DESC NULLS LAST
       ${limit}
       ${offset};
     `;
@@ -807,7 +832,7 @@ export class ChannelStartupService {
         const lastMessage = contact.lastMessageId
           ? {
               id: contact.lastMessageId,
-              key: contact.lastMessage_key,
+              key: contact.lastMessageKey,
               pushName: contact.lastMessagePushName,
               participant: contact.lastMessageParticipant,
               messageType: contact.lastMessageMessageType,

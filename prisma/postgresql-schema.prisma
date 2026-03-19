@@ -122,34 +122,40 @@ model Session {
 }
 
 model Chat {
-  id             String    @id @default(cuid())
-  remoteJid      String    @db.VarChar(100)
-  name           String?   @db.VarChar(100)
-  labels         Json?     @db.JsonB
-  createdAt      DateTime? @default(now()) @db.Timestamp
-  updatedAt      DateTime? @updatedAt @db.Timestamp
-  Instance       Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  remoteJid      String        @db.VarChar(100)
+  name           String?       @db.VarChar(100)
+  labels         Json?         @db.JsonB
+  createdAt      DateTime?     @default(now()) @db.Timestamp
+  updatedAt      DateTime?     @updatedAt @db.Timestamp
+  Instance       Instance      @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   instanceId     String
-  unreadMessages Int       @default(0)
+  unreadMessages Int           @default(0)
+  IsOnWhatsapp   IsOnWhatsapp? @relation(fields: [isOnWhatsappId], references: [id], onDelete: Cascade)
+  isOnWhatsappId String?
 
   @@unique([instanceId, remoteJid])
   @@index([instanceId])
   @@index([remoteJid])
+  @@index([isOnWhatsappId])
 }
 
 model Contact {
-  id            String    @id @default(cuid())
-  remoteJid     String    @db.VarChar(100)
-  pushName      String?   @db.VarChar(100)
-  profilePicUrl String?   @db.VarChar(500)
-  createdAt     DateTime? @default(now()) @db.Timestamp
-  updatedAt     DateTime? @updatedAt @db.Timestamp
-  Instance      Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  instanceId    String
+  id             String        @id @default(cuid())
+  remoteJid      String        @db.VarChar(100)
+  pushName       String?       @db.VarChar(100)
+  profilePicUrl  String?       @db.VarChar(500)
+  createdAt      DateTime?     @default(now()) @db.Timestamp
+  updatedAt      DateTime?     @updatedAt @db.Timestamp
+  Instance       Instance      @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instanceId     String
+  IsOnWhatsapp   IsOnWhatsapp? @relation(fields: [isOnWhatsappId], references: [id], onDelete: Cascade)
+  isOnWhatsappId String?
 
   @@unique([remoteJid, instanceId])
   @@index([remoteJid])
   @@index([instanceId])
+  @@index([isOnWhatsappId])
 }
 
 model Message {
@@ -657,12 +663,14 @@ model FlowiseSetting {
 }
 
 model IsOnWhatsapp {
-  id         String   @id @default(cuid())
-  remoteJid  String   @unique @db.VarChar(100)
+  id         String    @id @default(cuid())
+  remoteJid  String    @unique @db.VarChar(100)
   jidOptions String
-  lid        String?  @db.VarChar(100)
-  createdAt  DateTime @default(now()) @db.Timestamp
-  updatedAt  DateTime @updatedAt @db.Timestamp
+  lid        String?   @db.VarChar(100)
+  createdAt  DateTime  @default(now()) @db.Timestamp
+  updatedAt  DateTime  @updatedAt @db.Timestamp
+  Contact    Contact[]
+  Chat       Chat[]
 }
 
 model N8n {
